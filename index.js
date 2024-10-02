@@ -1,5 +1,8 @@
 require('dotenv').config();
 const { Client, GatewayIntentBits, Partials } = require('discord.js');
+const express = require('express'); // Import Express
+const app = express(); // Initialize the Express app
+
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -17,11 +20,7 @@ const prefix = ':';
 // When the bot is ready
 client.once('ready', () => {
     console.log(`Logged in as ${client.user.tag}!`);
-    // Set a timer to stop the bot after 9999 minutes (599940000 milliseconds)
-        setTimeout(() => {
-            console.log('Time is up! Shutting down the bot...');
-            client.destroy(); // This will log the bot out of Discord
-        }, 599940000); // 9999 minutes in milliseconds
+
 });
 
 // Function to check permissions
@@ -385,5 +384,19 @@ client.on('messageCreate', async message => {
         message.channel.send(helpMessage);
     }
 });
+// Add health check route for the bot
+app.get('/', (req, res) => {
+    res.send('Bot is running!');
+});
 
+// Add a health check endpoint (optional)
+app.get('/health', (req, res) => {
+    res.json({ status: 'Healthy', uptime: process.uptime() });
+});
+
+// Set up a dynamic port
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+});
 client.login(process.env.TOKEN);
