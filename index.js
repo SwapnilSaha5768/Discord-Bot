@@ -1,402 +1,697 @@
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, PermissionFlagsBits } = require('discord.js');
+const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, VoiceConnectionStatus, getVoiceConnection } = require('@discordjs/voice');
+const play = require('play-dl');
+const scdl = require('scdl-core');
+const fetch = require('isomorphic-unfetch');
+const { getTracks } = require('spotify-url-info')(fetch);
 require('dotenv').config();
-const { Client, GatewayIntentBits, Partials } = require('discord.js');
-const express = require('express'); // Import Express
-const app = express(); // Initialize the Express app
 
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildVoiceStates
+        GatewayIntentBits.GuildVoiceStates,
     ],
-    partials: [Partials.Message, Partials.Channel, Partials.Reaction],
 });
 
-// Set prefix
-const prefix = ':';
 
-// When the bot is ready
-client.once('ready', () => {
+process.on('unhandledRejection', error => {
+    console.error('Unhandled Promise Rejection:', error);
+});
+
+process.on('uncaughtException', error => {
+    console.error('Uncaught Exception:', error);
+});
+
+const queue = new Map();
+
+client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
-
+    try {
+        console.log('Fetching SoundCloud Client ID...');
+        const clientID = await play.getFreeClientID();
+        scdl.SoundCloud.clientId = clientID;
+        console.log(`Connected to SoundCloud with Client ID: ${clientID}`);
+    } catch (err) {
+        console.error('Failed to get SoundCloud Client ID:', err);
+    }
+    console.log('Music Bot is ready!');
 });
 
-// Function to check permissions
-const checkPermissions = (message, permissions) => {
-    return message.member.permissions.has(permissions);
-};
+function findBestMatch(tracks, query, targetDurationSec) {
+    const q = query.toLowerCase();
 
-// Moderation commands
-client.on('messageCreate', async message => {
-    // Ignore messages from the bot itself or without the prefix
-    if (!message.content.startsWith(prefix) || message.author.bot) return;
+    let candidates = tracks.filter(t => {
+        if (!t.duration || t.duration < 30000) return false;
+        if (t.policy === 'SNIP' || t.policy === 'BLOCK') return false;
 
-    // Split the message into command and arguments
-    const args = message.content.slice(prefix.length).trim().split(/ +/);
-    const command = args.shift().toLowerCase();
-
-    // Kick command
-    if (command === 'kick') {
-        if (!checkPermissions(message, 'KICK_MEMBERS')) {
-            return message.channel.send("You don't have permission to use this command.");
+        if (targetDurationSec) {
+            const trackDurationSec = Math.floor(t.duration / 1000);
+            const diff = Math.abs(trackDurationSec - targetDurationSec);
+            if (diff > 10) return false;
         }
 
-        const member = message.mentions.members.first();
-        if (member) {
-            member.kick().then(() => {
-                message.channel.send(`${member.user.tag} has been kicked.`);
-            }).catch(err => {
-                message.channel.send("I do not have permission to kick this member.");
-                console.error(err);
-            });
-        } else {
-            message.channel.send('Please mention a user to kick.');
-        }
+        return true;
+    });
+
+    if (candidates.length === 0 && targetDurationSec) {
+        candidates = tracks.sort((a, b) => {
+            const diffA = Math.abs((a.duration / 1000) - targetDurationSec);
+            const diffB = Math.abs((b.duration / 1000) - targetDurationSec);
+            return diffA - diffB;
+        });
     }
 
-    // Ban command
-    else if (command === 'ban') {
-        if (!checkPermissions(message, 'BAN_MEMBERS')) {
-            return message.channel.send("You don't have permission to use this command.");
-        }
+    const hasVersionArgs = q.includes('remix') || q.includes('cover') || q.includes('live') || q.includes('mix') || q.includes('edit');
 
-        const member = message.mentions.members.first();
-        if (member) {
-            member.ban().then(() => {
-                message.channel.send(`${member.user.tag} has been banned.`);
-            }).catch(err => {
-                message.channel.send("I do not have permission to ban this member.");
-                console.error(err);
-            });
-        } else {
-            message.channel.send('Please mention a user to ban.');
+    if (!hasVersionArgs) {
+        const cleanCandidates = candidates.filter(t => {
+            const title = t.title.toLowerCase();
+            return !title.includes('remix') && !title.includes('cover') && !title.includes('live') && !title.includes('reverb') && !title.includes('slowed') && !title.includes('reprised');
+        });
+
+        if (cleanCandidates.length > 0) {
+            candidates = cleanCandidates;
         }
     }
+    return candidates.length > 0 ? candidates[0] : (tracks.length > 0 ? tracks[0] : null);
+}
 
-    // Move user command
-    else if (command === 'move') {
-        if (!checkPermissions(message, 'MOVE_MEMBERS')) {
-            return message.channel.send("You don't have permission to use this command.");
-        }
-
-        const member = message.mentions.members.first();
-        const channelID = args[1]; // The ID of the target voice channel
-
-        if (member && channelID) {
-            const channel = message.guild.channels.cache.get(channelID);
-            if (channel && channel.type === 2) { // 2 is the type for voice channels
-                member.voice.setChannel(channel).then(() => {
-                    message.channel.send(`Moved ${member.user.tag} to ${channel.name}.`);
-                }).catch(err => {
-                    message.channel.send("Failed to move the member.");
-                    console.error(err);
-                });
-            } else {
-                message.channel.send("Invalid voice channel ID.");
-            }
-        } else {
-            message.channel.send("Please mention a user and provide a valid voice channel ID.");
-        }
-    }
-
-    // Command to give an existing role to a user
-    else if (command === 'giverole') {
-        if (!checkPermissions(message, 'MANAGE_ROLES')) {
-            return message.channel.send("You don't have permission to use this command.");
-        }
-
-        const member = message.mentions.members.first();
-        const roleName = args.slice(1).join(' '); // Role name after the mention
-
-        if (member && roleName) {
-            const role = message.guild.roles.cache.find(r => r.name === roleName);
-            if (role) {
-                member.roles.add(role).then(() => {
-                    message.channel.send(`${member.user.tag} has been given the ${roleName} role.`);
-                }).catch(err => {
-                    message.channel.send(`Failed to give the ${roleName} role.`);
-                    console.error(err);
-                });
-            } else {
-                message.channel.send(`Role ${roleName} not found.`);
-            }
-        } else {
-            message.channel.send('Please mention a user and specify a role.');
-        }
-    }
-
-    // Command to create a new role with a specific color
-    else if (command === 'createrole') {
-        if (!checkPermissions(message, 'MANAGE_ROLES')) {
-            return message.channel.send("You don't have permission to use this command.");
-        }
-
-        const roleName = args[0]; // The first argument is the role name
-        const roleColor = args[1]; // The second argument is the role color (in HEX)
-
-        if (roleName && /^#[0-9A-F]{6}$/i.test(roleColor)) {
-            message.guild.roles.create({
-                name: roleName,
-                color: roleColor,
-            }).then(role => {
-                message.channel.send(`Role ${roleName} created with color ${roleColor}.`);
-            }).catch(err => {
-                message.channel.send('Failed to create the role.');
-                console.error(err);
-            });
-        } else {
-            message.channel.send('Please provide a valid role name and a valid HEX color code.');
-        }
-    }
-
-    // Command to update the color of an existing role
-    else if (command === 'updaterolecolor') {
-        if (!checkPermissions(message, 'MANAGE_ROLES')) {
-            return message.channel.send("You don't have permission to use this command.");
-        }
-
-        const roleName = args[0]; // The first argument is the role name
-        const newColor = args[1]; // The second argument is the new color (in HEX)
-
-        if (roleName && /^#[0-9A-F]{6}$/i.test(newColor)) {
-            const role = message.guild.roles.cache.find(r => r.name === roleName);
-            if (role) {
-                role.setColor(newColor).then(updated => {
-                    message.channel.send(`Updated ${roleName}'s color to ${newColor}.`);
-                }).catch(err => {
-                    message.channel.send('Failed to update the role color.');
-                    console.error(err);
-                });
-            } else {
-                message.channel.send(`Role ${roleName} not found.`);
-            }
-        } else {
-            message.channel.send('Please provide a valid role name and a valid HEX color code.');
-        }
-    }
-
-    // Setup mute role command
-    else if (command === 'setupmute') {
-        if (!checkPermissions(message, 'MANAGE_ROLES')) {
-            return message.channel.send("You don't have permission to use this command.");
-        }
-
-        const muteRoleName = 'Muted';
-
-        // Check if the role already exists
-        let muteRole = message.guild.roles.cache.find(role => role.name === muteRoleName);
-        if (muteRole) {
-            return message.channel.send(`The "Muted" role already exists.`);
-        }
-
-        // Create the Muted role
+const axios = require('axios');
+async function getSoundCloudStream(url) {
+    try {
+        return await scdl.SoundCloud.download(url, {
+            highWaterMark: 1 << 25
+        });
+    } catch (e) {
+        console.warn(`[WARN] Standard download failed for ${url}: ${e}. Trying progressive fallback...`);
         try {
-            muteRole = await message.guild.roles.create({
-                name: muteRoleName,
-                color: '#000000',
-                reason: 'Mute role created for muting users.',
-            });
+            const track = await scdl.SoundCloud.tracks.getTrack(url);
+            const progressive = track.media.transcodings.find(t => t.format.protocol === 'progressive');
 
-            // Update channel permissions to prevent the muted role from sending messages or speaking
-            message.guild.channels.cache.forEach(async (channel) => {
-                await channel.permissionOverwrites.create(muteRole, {
-                    SEND_MESSAGES: false,
-                    ADD_REACTIONS: false,
-                    SPEAK: false,
-                    CONNECT: false,
+            if (progressive) {
+                const clientId = scdl.SoundCloud.clientId;
+                const linkUrl = `${progressive.url}?client_id=${clientId}`;
+
+                const response = await axios.get(linkUrl, {
+                    headers: { "User-Agent": "Mozilla/5.0", Accept: "*/*" }
                 });
-            });
+                const streamUrl = response.data.url;
+                const streamRes = await axios.get(streamUrl, { responseType: 'stream' });
+                return streamRes.data;
+            }
+        } catch (ex) {
+            console.error("[ERROR] Progressive fallback failed:", ex);
+        }
+        throw e;
+    }
+}
 
-            message.channel.send(`"Muted" role has been created and permissions have been set.`);
-        } catch (error) {
-            console.error(error);
-            message.channel.send("An error occurred while setting up the mute role.");
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isChatInputCommand() && !interaction.isButton()) return;
+
+    if (interaction.isChatInputCommand()) {
+        const { commandName } = interaction;
+
+        if (commandName === 'play') {
+            await handlePlay(interaction);
+        } else if (commandName === 'stop') {
+            await handleStop(interaction);
+        } else if (commandName === 'skip') {
+            await handleSkip(interaction);
+        } else if (commandName === 'queue') {
+            await handleQueue(interaction);
+        } else if (commandName === 'pause') {
+            await handlePause(interaction);
+        } else if (commandName === 'resume') {
+            await handleResume(interaction);
+        } else if (commandName === 'purge') {
+            await handlePurge(interaction);
+        } else if (commandName === 'nowplaying') {
+            await handleNowPlaying(interaction);
+        } else if (commandName === 'clear') {
+            await handleClear(interaction);
+        } else if (commandName === 'skipto') {
+            await handleSkipTo(interaction);
         }
     }
-
-    // Mute command to assign the mute role
-    else if (command === 'mute') {
-        if (!checkPermissions(message, 'TIMEOUT_MEMBERS')) {
-            return message.channel.send("You don't have permission to use this command.");
-        }
-
-        const member = message.mentions.members.first();
-
-        if (!member) {
-            return message.channel.send('Please mention a user to mute.');
-        }
-
-        // Find the Muted role or create it if it doesn't exist
-        let muteRole = message.guild.roles.cache.find(role => role.name === 'Muted');
-
-        if (!muteRole) {
-            return message.channel.send('The "Muted" role does not exist. Use !setupmute to create it.');
-        }
-
-        // Assign the mute role to the member
-        member.roles.add(muteRole)
-            .then(() => {
-                message.channel.send(`${member.user.tag} has been muted.`);
-            })
-            .catch(err => {
-                message.channel.send("I do not have permission to mute this member.");
-                console.error(err);
-            });
-    }
-
-    // Unmute command
-    else if (command === 'unmute') {
-        if (!checkPermissions(message, 'TIMEOUT_MEMBERS')) {
-            return message.channel.send("You don't have permission to use this command.");
-        }
-
-        const member = message.mentions.members.first();
-
-        if (!member) {
-            return message.channel.send('Please mention a user to unmute.');
-        }
-
-        // Find the Muted role
-        const muteRole = message.guild.roles.cache.find(role => role.name === 'Muted');
-
-        if (!muteRole) {
-            return message.channel.send('The "Muted" role does not exist.');
-        }
-
-        // Remove the mute role from the member
-        member.roles.remove(muteRole)
-            .then(() => {
-                message.channel.send(`${member.user.tag} has been unmuted.`);
-            })
-            .catch(err => {
-                message.channel.send("I do not have permission to unmute this member.");
-                console.error(err);
-            });
+    else if (interaction.isButton()) {
+        await handleButtons(interaction);
     }
 });
 
-// Purge command
-client.on('messageCreate', async message => {
-    if (!message.content.startsWith(prefix) || message.author.bot) return;
+async function handlePlay(interaction) {
+    const query = interaction.options.getString('query');
+    const member = interaction.member;
+    const voiceChannel = member.voice.channel;
 
-    const args = message.content.slice(prefix.length).trim().split(/ +/);
-    const command = args.shift().toLowerCase();
-    
+    if (!voiceChannel) {
+        return interaction.reply({ content: 'You must be in a voice channel to play music!', ephemeral: true });
+    }
 
-    // !purge command for number-based, user-based, or bot-based purging
-    if (command === 'purge') {
-        // Only allow users with MANAGE_MESSAGES permission to use this command
-        if (!message.member.permissions.has('MANAGE_MESSAGES')) {
-            return message.channel.send("You don't have permission to use this command.");
+    if (!voiceChannel.joinable || !voiceChannel.speakable) {
+        return interaction.reply({ content: 'I need permissions to join and speak in your voice channel!', ephemeral: true });
+    }
+
+    await interaction.deferReply();
+
+    const guildId = interaction.guildId;
+    let serverQueue = queue.get(guildId);
+
+    if (!serverQueue) {
+        serverQueue = {
+            connection: null,
+            player: createAudioPlayer(),
+            songs: [],
+            playing: false,
+            channel: interaction.channel
+        };
+        queue.set(guildId, serverQueue);
+    }
+
+    try {
+        let songsToAdd = [];
+
+        const validation = await play.validate(query);
+
+        if (validation === 'sp_track' || validation === 'sp_playlist' || validation === 'sp_album') {
+            try {
+                const spotTracks = await getTracks(query);
+
+                for (const track of spotTracks) {
+                    const searchString = `${track.name} ${track.artists ? track.artists[0].name : ''}`;
+                    songsToAdd.push({
+                        title: track.name,
+                        artist: track.artists ? track.artists[0].name : 'Unknown Artist',
+                        url: null,
+                        searchQuery: searchString,
+                        duration: track.duration_ms ? Math.floor(track.duration_ms / 1000).toString() : '0',
+                        thumbnail: null,
+                        requester: interaction.user.tag,
+                        source: 'spotify_bridge'
+                    });
+                }
+
+                if (validation !== 'sp_track') {
+                    interaction.followUp({ content: `Queued ${spotTracks.length} tracks from Spotify!` });
+                }
+
+            } catch (e) {
+                console.error('Spotify fetch failed:', e);
+                return interaction.followUp({ content: 'Could not fetch Spotify data. Check if the link is valid.', ephemeral: true });
+            }
         }
 
-        const subCommand = args[0]; // e.g. user, bot, number
-        let messagesToDelete = [];
+
+
+        if (songsToAdd.length === 0 && validation !== 'so_track' && validation !== 'so_playlist' && validation !== 'sp_track' && validation !== 'sp_playlist' && validation !== 'sp_album') {
+
+            try {
+                console.log(`[DEBUG] Searching SoundCloud for query: "${query}"`);
+
+                const searchResults = await scdl.SoundCloud.search({
+                    query: query,
+                    filter: 'tracks'
+                });
+
+                let options = [];
+                if (searchResults && searchResults.collection) {
+                    options = searchResults.collection
+                        .filter(t => t.kind === 'track')
+                        .slice(0, 10);
+                }
+
+                options = options.filter(t => t.duration && t.duration > 30000);
+
+                if (options.length === 0) {
+                    return interaction.followUp({ content: 'Could not find any songs on SoundCloud with that query!', ephemeral: true });
+                }
+
+                const suggestions = options.slice(0, 6);
+
+                const selectMenu = new StringSelectMenuBuilder()
+                    .setCustomId('search_select')
+                    .setPlaceholder('Select a song to play')
+                    .addOptions(
+                        suggestions.map((song, index) =>
+                            new StringSelectMenuOptionBuilder()
+                                .setLabel(song.title.substring(0, 100))
+                                .setDescription(`By ${song.user.username} | ${Math.floor(song.duration / 1000)}s`)
+                                .setValue(index.toString())
+                        )
+                    );
+
+                const row = new ActionRowBuilder().addComponents(selectMenu);
+
+                const reply = await interaction.followUp({
+                    content: `**Found ${suggestions.length} results for "${query}":**\nPlease select one:`,
+                    components: [row]
+                });
+
+                try {
+                    const confirmation = await reply.awaitMessageComponent({ filter: i => i.user.id === interaction.user.id, time: 30000 });
+
+                    const selectedIndex = parseInt(confirmation.values[0]);
+                    const selectedTrack = suggestions[selectedIndex];
+                    console.log(`[DEBUG] Selected Track URL: ${selectedTrack.permalink_url}`); // Log the chosen URL
+
+                    await confirmation.update({ content: `Selected: **${selectedTrack.title}**`, components: [] });
+
+                    songsToAdd.push({
+                        title: selectedTrack.title,
+                        url: selectedTrack.permalink_url,
+                        duration: Math.floor((selectedTrack.duration || 0) / 1000).toString(),
+                        thumbnail: selectedTrack.artwork_url || selectedTrack.user?.avatar_url,
+                        requester: interaction.user.tag,
+                        source: 'soundcloud'
+                    });
+
+                } catch (e) {
+                    return interaction.editReply({ content: 'Selection timed out or cancelled.', components: [] });
+                }
+
+            } catch (e) {
+                console.error('Search failed:', e);
+                return interaction.followUp({ content: 'Search failed. Please try again.', ephemeral: true });
+            }
+        }
+        else if (validation === 'so_track' || validation === 'so_playlist') {
+            try {
+                const searchResults = await scdl.SoundCloud.search({
+                    query: query,
+                    filter: 'tracks'
+                });
+
+                let track;
+                if (searchResults && searchResults.collection) {
+                    track = findBestMatch(searchResults.collection.filter(t => t.kind === 'track'), query);
+                }
+
+                if (track) {
+                    songsToAdd.push({
+                        title: track.title,
+                        url: track.permalink_url,
+                        duration: Math.floor((track.duration || 0) / 1000).toString(),
+                        thumbnail: track.artwork_url || track.user?.avatar_url,
+                        requester: interaction.user.tag,
+                        source: 'soundcloud'
+                    });
+                } else {
+                    songsToAdd.push({
+                        title: 'SoundCloud Track',
+                        url: query,
+                        duration: '0',
+                        thumbnail: null,
+                        requester: interaction.user.tag,
+                        source: 'soundcloud'
+                    });
+                }
+            } catch (e) {
+                console.error("SC URL Search Error:", e);
+                songsToAdd.push({
+                    title: 'SoundCloud Track',
+                    url: query,
+                    duration: '0',
+                    thumbnail: null,
+                    requester: interaction.user.tag,
+                    source: 'soundcloud'
+                });
+            }
+
+        }
+
+        if (songsToAdd.length === 0) {
+            return interaction.followUp({ content: 'No songs found.', ephemeral: true });
+        }
+
+        serverQueue.songs.push(...songsToAdd);
 
         try {
-            // Number-based purge (e.g., !purge 50)
-            if (!isNaN(subCommand)) {
-                const amount = parseInt(subCommand);
+            if (!serverQueue.connection) {
+                const connection = joinVoiceChannel({
+                    channelId: voiceChannel.id,
+                    guildId: guildId,
+                    adapterCreator: interaction.guild.voiceAdapterCreator,
+                });
+                serverQueue.connection = connection;
 
-                if (amount < 1 || amount > 100) {
-                    return message.channel.send('You need to input a number between 1 and 100.');
-                }
+                connection.subscribe(serverQueue.player);
 
-                // Fetch messages and delete
-                const fetchedMessages = await message.channel.messages.fetch({ limit: amount });
-                messagesToDelete = fetchedMessages;
-
-            // User-based purge (e.g., !purge user @user)
-            } else if (subCommand === 'user') {
-                const user = message.mentions.users.first();
-                if (!user) {
-                    return message.channel.send('Please mention a user.');
-                }
-
-                // Fetch messages and filter them by the user
-                const fetchedMessages = await message.channel.messages.fetch({ limit: 100 });
-                messagesToDelete = fetchedMessages.filter(m => m.author.id === user.id);
-
-            // Bot-based purge (e.g., !purge bot)
-            } else if (subCommand === 'bot') {
-                // Fetch messages and filter them by bot users
-                const fetchedMessages = await message.channel.messages.fetch({ limit: 100 });
-                messagesToDelete = fetchedMessages.filter(m => m.author.bot);
-
-            } else {
-                return message.channel.send('Invalid subcommand. Use `!purge <number>`, `!purge user @user`, or `!purge bot`.');
+                connection.on(VoiceConnectionStatus.Disconnected, () => {
+                    queue.delete(guildId);
+                });
             }
-
-            // Ensure messages are less than 14 days old
-            const filteredMessages = messagesToDelete.filter(m => (Date.now() - m.createdTimestamp) < 1209600000);
-
-            if (filteredMessages.size === 0) {
-                return message.channel.send('No messages to delete, or messages are older than 14 days.');
-            }
-
-            // Bulk delete the filtered messages
-            await message.channel.bulkDelete(filteredMessages, true);
-            message.channel.send(`Successfully deleted ${filteredMessages.size} messages.`).then(msg => {
-                setTimeout(() => msg.delete(), 5000); // Auto-delete the success message after 5 seconds
-            });
-
         } catch (err) {
             console.error(err);
-            message.channel.send('Something went wrong while trying to purge messages.');
-        }
-    }
-
-    // Say command
-    else if (command === 'say') {
-        const sayMessage = args.join(' '); // Join all the arguments to form the message
-        if (!sayMessage) {
-            return message.channel.send('Please provide a message to say.');
+            queue.delete(guildId);
+            return interaction.followUp('Could not join the voice channel!');
         }
 
-        // Send the message to the channel
-        await message.channel.send(sayMessage);
+        if (!serverQueue.playing) {
+            await playSong(guildId, serverQueue.songs[0]);
+        } else {
+            if (songsToAdd.length === 1) {
+                const songInfo = songsToAdd[0];
+                const embed = new EmbedBuilder()
+                    .setColor('#00FF00')
+                    .setTitle('Added to Queue')
+                    .setDescription(`[${songInfo.title}](${songInfo.url || 'Searching on Play'})`)
+                    .addFields(
+                        { name: 'Requested By', value: songInfo.requester, inline: true }
+                    );
+                return interaction.followUp({ embeds: [embed] });
+            }
+        }
 
-        // Delete the command message to keep the chat clean
-        await message.delete().catch(err => console.error('Failed to delete message:', err));
+    } catch (error) {
+        console.error(error);
+        return interaction.followUp({ content: 'There was an error trying to execute that command: ' + error.message, ephemeral: true });
+    }
+}
+
+async function playSong(guildId, song) {
+    const serverQueue = queue.get(guildId);
+    if (!serverQueue) return;
+
+    if (!song) {
+        serverQueue.playing = false;
+        return;
     }
 
-    // Help command to show all available commands
-    else if (command === 'help') {
-        const helpMessage = `
-**Available Commands:**
-\`\`\`
-1. ${prefix}help - Shows this help message.
-2. ${prefix}kick @user - Kicks a mentioned user from the server.
-3. ${prefix}ban @user - Bans a mentioned user from the server.
-4. ${prefix}mute @user - Mutes a mentioned user.
-5. ${prefix}unmute @user - Unmutes a mentioned user.
-6. ${prefix}move @user channelID - Moves a mentioned user to the specified voice channel.
-7. ${prefix}giverole @user roleName - Gives a mentioned user an existing role.
-8. ${prefix}createrole roleName #HEXCOLOR - Creates a new role with the specified name and color.
-9. ${prefix}updaterolecolor roleName #HEXCOLOR - Updates the color of an existing role.
-10. ${prefix}setupmute - Sets up the mute role and permissions automatically.
-11. ${prefix}purge <number/user/bot> - Deletes messages based on specified criteria.
-12. ${prefix}say [message] - Makes the bot say the specified message.
-\`\`\`
-        `;
-        message.channel.send(helpMessage);
+    console.log(`[DEBUG] Attempting to play: ${song.title}`);
+
+    serverQueue.playing = true;
+
+    try {
+        let stream;
+
+        if (song.source === 'spotify_bridge' && !song.url) {
+            console.log(`[DEBUG] Bridging Spotify track: ${song.searchQuery}`);
+            const searchResults = await scdl.SoundCloud.search({
+                query: song.searchQuery,
+                filter: 'tracks'
+            });
+
+            if (searchResults && searchResults.collection && searchResults.collection.length > 0) {
+                const track = findBestMatch(searchResults.collection.filter(t => t.kind === 'track'), song.searchQuery, parseInt(song.duration));
+                if (track) {
+                    song.url = track.permalink_url;
+                    song.title = track.title;
+                    song.thumbnail = track.artwork_url || track.user?.avatar_url;
+                    song.duration = Math.floor((track.duration || 0) / 1000).toString();
+                } else {
+                    console.log(`[DEBUG] Could not find bridged track: ${song.searchQuery}`);
+                    throw new Error('Could not find track on SoundCloud.');
+                }
+            } else {
+                console.log(`[DEBUG] Could not find bridged track: ${song.searchQuery}`);
+                throw new Error('Could not find track on SoundCloud.');
+            }
+        }
+
+        if (!song.url) throw new Error('Song URL is undefined!');
+
+        console.log(`[DEBUG] Download URL: ${song.url}`);
+
+        stream = await getSoundCloudStream(song.url);
+
+        const resource = createAudioResource(stream);
+
+        serverQueue.player.play(resource);
+
+        if (serverQueue.channel) {
+            sendNowPlayingEmbed(serverQueue.channel, song, serverQueue).catch(console.error);
+        }
+
+        serverQueue.player.removeAllListeners(AudioPlayerStatus.Idle);
+        serverQueue.player.removeAllListeners('error');
+
+        serverQueue.player.on(AudioPlayerStatus.Idle, () => {
+            const currentQueue = queue.get(guildId);
+            if (currentQueue) {
+                currentQueue.songs.shift();
+                playSong(guildId, currentQueue.songs[0]);
+            }
+        });
+
+        serverQueue.player.on('error', error => {
+            console.error('Player Error:', error);
+            const currentQueue = queue.get(guildId);
+            if (currentQueue) {
+                currentQueue.songs.shift();
+                playSong(guildId, currentQueue.songs[0]);
+            }
+        });
+
+    } catch (error) {
+        console.error('Stream Creation Error:', error);
+        const currentQueue = queue.get(guildId);
+        if (currentQueue) {
+            currentQueue.songs.shift();
+            playSong(guildId, currentQueue.songs[0]);
+        }
     }
-});
-// Add health check route for the bot
-app.get('/', (req, res) => {
-    res.send('Bot is running!');
-});
+}
 
-// Add a health check endpoint (optional)
-app.get('/health', (req, res) => {
-    res.json({ status: 'Healthy', uptime: process.uptime() });
-});
+async function handleStop(interaction) {
+    const serverQueue = queue.get(interaction.guildId);
+    if (!serverQueue) return interaction.reply({ content: 'No music is currently playing!', ephemeral: true });
 
-// Set up a dynamic port
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-});
+    serverQueue.songs = [];
+    serverQueue.player.stop();
+    if (serverQueue.connection) serverQueue.connection.destroy();
+    queue.delete(interaction.guildId);
+
+    await interaction.reply({ content: '⏹️ Stopped the music and cleared the queue.' });
+}
+
+async function handleSkip(interaction) {
+    const serverQueue = queue.get(interaction.guildId);
+    if (!serverQueue) return interaction.reply({ content: 'No music is currently playing!', ephemeral: true });
+
+    serverQueue.player.stop();
+    await interaction.reply({ content: '⏭️ Skipped the song.' });
+}
+
+async function handlePause(interaction) {
+    const serverQueue = queue.get(interaction.guildId);
+    if (!serverQueue) return interaction.reply({ content: 'No music is playing!', ephemeral: true });
+
+    if (serverQueue.player.pause()) {
+        await interaction.reply({ content: '⏸️ Paused the music.' });
+    } else {
+        await interaction.reply({ content: 'Are you sure music is playing?', ephemeral: true });
+    }
+}
+
+async function handleResume(interaction) {
+    const serverQueue = queue.get(interaction.guildId);
+    if (!serverQueue) return interaction.reply({ content: 'No music is playing!', ephemeral: true });
+
+    if (serverQueue.player.unpause()) {
+        await interaction.reply({ content: '▶️ Resumed the music.' });
+    } else {
+        await interaction.reply({ content: 'Music is probably not paused.', ephemeral: true });
+    }
+}
+
+async function handleQueue(interaction) {
+    const serverQueue = queue.get(interaction.guildId);
+    if (!serverQueue || serverQueue.songs.length === 0) {
+        return interaction.reply({ content: '❌ The queue is currently empty.', ephemeral: true });
+    }
+
+    const currentSong = serverQueue.songs[0];
+    // Calculate total queue duration
+    const totalDurationSeconds = serverQueue.songs.reduce((acc, song) => acc + (parseInt(song.duration) || 0), 0);
+    const totalFormatted = formatDuration(totalDurationSeconds);
+
+    const embed = new EmbedBuilder()
+        .setColor('#FF5500')
+        .setTitle('📜 Music Queue')
+        .setDescription(`**Now Playing:**\n[${currentSong.title}](${currentSong.url || 'https://soundcloud.com'}) | \`${currentSong.duration ? formatDuration(parseInt(currentSong.duration)) : 'Live'}\`\nRequested by: ${currentSong.requester}`)
+        .setFooter({ text: `Total Songs: ${serverQueue.songs.length} | Total Duration: ${totalFormatted}`, iconURL: interaction.client.user.displayAvatarURL() });
+
+    const tracks = serverQueue.songs.slice(1);
+    let playlistString = '';
+    let count = 0;
+
+    for (let i = 0; i < tracks.length; i++) {
+        const song = tracks[i];
+        const line = `**${i + 1}.** [${song.title.substring(0, 50)}](${song.url || 'https://soundcloud.com'}) | \`${song.duration ? formatDuration(parseInt(song.duration)) : 'Live'}\`\n`;
+
+        if ((playlistString.length + line.length) > 1000) {
+            playlistString += `... and ${tracks.length - count} more.`;
+            break;
+        }
+
+        playlistString += line;
+        count++;
+    }
+
+    if (playlistString.length > 0) {
+        embed.addFields({ name: '🎵 Up Next', value: playlistString });
+    } else {
+        embed.addFields({ name: '🎵 Up Next', value: 'No other songs in queue.' });
+    }
+
+    await interaction.reply({ embeds: [embed] });
+}
+
+async function handlePurge(interaction) {
+    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+        return interaction.reply({ content: '❌ You do not have permission to use this command.', ephemeral: true });
+    }
+
+    const count = interaction.options.getInteger('count');
+
+    if (count < 1 || count > 100) {
+        return interaction.reply({ content: 'Please provide a number between 1 and 100.', ephemeral: true });
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+        const deleted = await interaction.channel.bulkDelete(count, true);
+        await interaction.editReply({ content: `🧹 Successfully deleted **${deleted.size}** messages.` });
+    } catch (error) {
+        console.error(error);
+        await interaction.editReply({ content: 'Failed to delete messages. They might be older than 14 days or I lack permissions.' });
+    }
+}
+
+async function handleNowPlaying(interaction) {
+    const serverQueue = queue.get(interaction.guildId);
+    if (!serverQueue || !serverQueue.playing) {
+        return interaction.reply({ content: 'No music is currently playing!', ephemeral: true });
+    }
+    await interaction.deferReply();
+    await sendNowPlayingEmbed(interaction, serverQueue.songs[0], serverQueue);
+}
+
+async function handleClear(interaction) {
+    const serverQueue = queue.get(interaction.guildId);
+    if (!serverQueue) {
+        return interaction.reply({ content: 'No music is currently playing!', ephemeral: true });
+    }
+
+    if (serverQueue.songs.length <= 1) {
+        return interaction.reply({ content: 'Queue is already empty (except for the current song).', ephemeral: true });
+    }
+
+    serverQueue.songs = [serverQueue.songs[0]]; // Keep only the playing song
+    await interaction.reply({ content: '🗑️ Queue has been cleared!' });
+}
+
+async function handleSkipTo(interaction) {
+    const serverQueue = queue.get(interaction.guildId);
+    if (!serverQueue) {
+        return interaction.reply({ content: 'No music is currently playing!', ephemeral: true });
+    }
+
+    const position = interaction.options.getInteger('position');
+
+    if (position < 1 || position >= serverQueue.songs.length) {
+        return interaction.reply({ content: `Invalid position! Please choose a number between 1 and ${serverQueue.songs.length - 1}.`, ephemeral: true });
+    }
+
+    // Remove songs between current (0) and target (position)
+    serverQueue.songs.splice(1, position - 1);
+    serverQueue.player.stop();
+
+    await interaction.reply({ content: `⏭️ Skipped ${position - 1} songs! Jumping to **${serverQueue.songs[1].title}**.` });
+}
+
+async function sendNowPlayingEmbed(target, song, serverQueue) {
+    const progressBar = '🔘▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬';
+    const duration = song.duration ? formatDuration(parseInt(song.duration)) : 'Live or Unknown';
+
+    const embed = new EmbedBuilder()
+        .setColor('#FF5500')
+        .setAuthor({ name: 'Now Playing', iconURL: 'https://ibb.co.com/GffJ5xL5' })
+        .setTitle(song.title.substring(0, 256))
+        .setURL(song.url || 'https://soundcloud.com')
+        .setDescription(`${progressBar}\n\n**${duration}**`)
+        .addFields(
+            { name: '👤 Requested By', value: song.requester, inline: true },
+            { name: '⏳ Duration', value: duration, inline: true },
+            { name: '📡 Source', value: song.source === 'spotify_bridge' ? 'Spotify' : 'SoundCloud', inline: true }
+        )
+        .setTimestamp()
+        .setFooter({ text: 'Melody Player', iconURL: target.client ? target.client.user.displayAvatarURL() : (target.user ? target.client.user.displayAvatarURL() : '') });
+
+    if (song.thumbnail) {
+        embed.setThumbnail(song.thumbnail);
+    }
+
+    const row = new ActionRowBuilder()
+        .addComponents(
+            new ButtonBuilder()
+                .setCustomId('music_pause')
+                .setLabel('Pause')
+                .setStyle(ButtonStyle.Secondary)
+                .setEmoji('⏸️'),
+            new ButtonBuilder()
+                .setCustomId('music_resume')
+                .setLabel('Resume')
+                .setStyle(ButtonStyle.Success)
+                .setEmoji('▶️'),
+            new ButtonBuilder()
+                .setCustomId('music_skip')
+                .setLabel('Skip')
+                .setStyle(ButtonStyle.Primary)
+                .setEmoji('⏭️'),
+            new ButtonBuilder()
+                .setCustomId('music_stop')
+                .setLabel('Stop')
+                .setStyle(ButtonStyle.Danger)
+                .setEmoji('⏹️')
+        );
+
+    try {
+        if (typeof target.followUp === 'function') {
+            await target.followUp({ embeds: [embed], components: [row] });
+        } else {
+            await target.send({ embeds: [embed], components: [row] });
+        }
+    } catch (err) {
+        console.error('Error sending Now Playing embed:', err);
+    }
+}
+
+function formatDuration(seconds) {
+    if (isNaN(seconds)) return '00:00';
+    const minutes = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+}
+
+async function handleButtons(interaction) {
+    await interaction.deferUpdate();
+
+    const serverQueue = queue.get(interaction.guildId);
+    if (!serverQueue) return interaction.followUp({ content: 'No music is active!', ephemeral: true });
+
+    switch (interaction.customId) {
+        case 'music_stop':
+            serverQueue.songs = [];
+            serverQueue.player.stop();
+            if (serverQueue.connection) serverQueue.connection.destroy();
+            queue.delete(interaction.guildId);
+            await interaction.channel.send('⏹️ Player stopped via button.');
+            break;
+        case 'music_pause':
+            serverQueue.player.pause();
+            await interaction.channel.send('⏸️ Paused.');
+            break;
+        case 'music_resume':
+            serverQueue.player.unpause();
+            await interaction.channel.send('▶️ Resumed.');
+            break;
+        case 'music_skip':
+            serverQueue.player.stop();
+            await interaction.channel.send('⏭️ Skipped.');
+            break;
+    }
+}
+
 client.login(process.env.TOKEN);

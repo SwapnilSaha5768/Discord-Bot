@@ -1,13 +1,22 @@
 {
   "name": "discord-bot",
   "version": "1.0.0",
-  "description": "A basic Discord moderation bot",
+  "description": "A Discord Music Bot",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
+    "@discordjs/voice": "^0.19.0",
+    "@snazzah/davey": "^0.1.9",
+    "axios": "^1.13.2",
     "discord.js": "^14.0.0",
-    "dotenv": "^16.0.0"
+    "dotenv": "^16.0.0",
+    "ffmpeg-static": "^5.3.0",
+    "isomorphic-unfetch": "^4.0.2",
+    "play-dl": "^1.9.7",
+    "scdl-core": "^1.1.0",
+    "sodium-native": "^5.0.10",
+    "spotify-url-info": "^3.2.18"
   }
 }
