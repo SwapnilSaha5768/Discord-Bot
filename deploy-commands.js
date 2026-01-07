@@ -59,19 +59,12 @@ const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
     try {
         console.log('Started refreshing application (/) commands.');
 
-        if (process.env.GUILD_ID) {
-            await rest.put(
-                Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
-                { body: commands },
-            );
-            console.log('Successfully reloaded application (/) commands for the guild.');
-        } else {
-            await rest.put(
-                Routes.applicationCommands(process.env.CLIENT_ID),
-                { body: commands },
-            );
-            console.log('Successfully reloaded application (/) commands globally.');
-        }
+        // Force global deployment for Slash Command Badge
+        await rest.put(
+            Routes.applicationCommands(process.env.CLIENT_ID),
+            { body: commands },
+        );
+        console.log('Successfully reloaded application (/) commands globally.');
 
     } catch (error) {
         console.error(error);
