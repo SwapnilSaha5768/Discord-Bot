@@ -132,6 +132,8 @@ client.on('interactionCreate', async interaction => {
             await handleClear(interaction);
         } else if (commandName === 'skipto') {
             await handleSkipTo(interaction);
+        } else if (commandName === 'help') {
+            await handleHelp(interaction);
         }
     }
     else if (interaction.isButton()) {
@@ -601,13 +603,34 @@ async function handleSkipTo(interaction) {
     await interaction.reply({ content: `⏭️ Skipped ${position - 1} songs! Jumping to **${serverQueue.songs[1].title}**.` });
 }
 
+async function handleHelp(interaction) {
+    const embed = new EmbedBuilder()
+        .setColor('#FF5500')
+        .setTitle('🎶 Melody Bot - Command List')
+        .setDescription('Here are all the available commands to control the vibe!')
+        .addFields(
+            { name: '🎵 /play <query/url>', value: 'Plays a song from SoundCloud or Spotify (Playlists supported!).', inline: false },
+            { name: '⏯️ /pause & /resume', value: 'Pause or resume the playback.', inline: true },
+            { name: '⏹️ /stop', value: 'Stops the music and clears the queue.', inline: true },
+            { name: '⏭️ /skip', value: 'Skips the current song.', inline: true },
+            { name: '🚀 /skipto <pos>', value: 'Jumps straight to a specific song in the queue.', inline: true },
+            { name: '🧹 /clear', value: 'Clear all upcoming songs.', inline: true },
+            { name: '👀 /nowplaying', value: 'Show the currently playing song.', inline: true },
+            { name: '📜 /queue', value: 'See upcoming songs.', inline: true },
+            { name: '🔥 /purge <count>', value: 'Bulk delete messages (Admin only).', inline: false },
+        )
+        .setFooter({ text: 'Melody Bot • Simple, Fast, Free', iconURL: interaction.client.user.displayAvatarURL() });
+
+    await interaction.reply({ embeds: [embed], ephemeral: true });
+}
+
 async function sendNowPlayingEmbed(target, song, serverQueue) {
-    const progressBar = '🔘▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬';
+    const progressBar = '🔘▬▬▬▬▬▬▬▬▬▬▬▬▬';
     const duration = song.duration ? formatDuration(parseInt(song.duration)) : 'Live or Unknown';
 
     const embed = new EmbedBuilder()
         .setColor('#FF5500')
-        .setAuthor({ name: 'Now Playing', iconURL: 'https://ibb.co.com/GffJ5xL5' })
+        .setAuthor({ name: 'Now Playing', iconURL: 'https://i.ibb.co.com/0ppXGDSG/Gemini-Generated-Image-nry3n8nry3n8nry3.png' })
         .setTitle(song.title.substring(0, 256))
         .setURL(song.url || 'https://soundcloud.com')
         .setDescription(`${progressBar}\n\n**${duration}**`)
@@ -693,5 +716,16 @@ async function handleButtons(interaction) {
             break;
     }
 }
+const express = require('express');
+const app = express();
+const port = process.env.PORT || 3000;
+
+app.get('/', (req, res) => {
+    res.send('Melody Bot is Alive! 🎶');
+});
+
+app.listen(port, () => {
+    console.log(`Web server listening on port ${port}`);
+});
 
 client.login(process.env.TOKEN);

@@ -47,6 +47,9 @@ const commands = [
             option.setName('position')
                 .setDescription('The position of the song in the queue')
                 .setRequired(true)),
+    new SlashCommandBuilder()
+        .setName('help')
+        .setDescription('Shows a list of all available commands'),
 ]
     .map(command => command.toJSON());
 
