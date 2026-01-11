@@ -134,6 +134,8 @@ client.on('interactionCreate', async interaction => {
             await handleSkipTo(interaction);
         } else if (commandName === 'help') {
             await handleHelp(interaction);
+        } else if (commandName === 'volume') {
+            await handleVolume(interaction);
         }
     }
     else if (interaction.isButton()) {
@@ -165,6 +167,7 @@ async function handlePlay(interaction) {
             player: createAudioPlayer(),
             songs: [],
             playing: false,
+            volume: 100,
             channel: interaction.channel
         };
         queue.set(guildId, serverQueue);
@@ -416,7 +419,8 @@ async function playSong(guildId, song) {
 
         stream = await getSoundCloudStream(song.url);
 
-        const resource = createAudioResource(stream);
+        const resource = createAudioResource(stream, { inlineVolume: true });
+        resource.volume.setVolumeLogarithmic(serverQueue.volume / 100);
 
         serverQueue.player.play(resource);
 
@@ -622,6 +626,25 @@ async function handleHelp(interaction) {
         .setFooter({ text: 'Melody Bot • Simple, Fast, Free', iconURL: interaction.client.user.displayAvatarURL() });
 
     await interaction.reply({ embeds: [embed], ephemeral: true });
+}
+
+async function handleVolume(interaction) {
+    const serverQueue = queue.get(interaction.guildId);
+    if (!serverQueue) {
+        return interaction.reply({ content: 'No music is currently playing!', ephemeral: true });
+    }
+
+    const volume = interaction.options.getInteger('level');
+
+    serverQueue.volume = volume;
+    if (serverQueue.player && serverQueue.player.state.status === AudioPlayerStatus.Playing) {
+        const resource = serverQueue.player.state.resource;
+        if (resource && resource.volume) {
+            resource.volume.setVolumeLogarithmic(volume / 100);
+        }
+    }
+
+    await interaction.reply({ content: `🔊 Volume set to **${volume}%**` });
 }
 
 async function sendNowPlayingEmbed(target, song, serverQueue) {

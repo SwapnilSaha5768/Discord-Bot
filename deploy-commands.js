@@ -50,6 +50,15 @@ const commands = [
     new SlashCommandBuilder()
         .setName('help')
         .setDescription('Shows a list of all available commands'),
+    new SlashCommandBuilder()
+        .setName('volume')
+        .setDescription('Adjusts the volume of the music (0-100)')
+        .addIntegerOption(option =>
+            option.setName('level')
+                .setDescription('Volume level between 0 and 100')
+                .setMinValue(0)
+                .setMaxValue(100)
+                .setRequired(true)),
 ]
     .map(command => command.toJSON());
 
