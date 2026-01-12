@@ -136,12 +136,73 @@ client.on('interactionCreate', async interaction => {
             await handleHelp(interaction);
         } else if (commandName === 'volume') {
             await handleVolume(interaction);
+        } else if (commandName === '247') {
+            await handle247(interaction);
         }
     }
     else if (interaction.isButton()) {
         await handleButtons(interaction);
     }
 });
+
+async function handle247(interaction) {
+    const guildId = interaction.guildId;
+    let serverQueue = queue.get(guildId);
+
+    const defaultUrl = 'https://stream.zeno.fm/zu59ykebs2zuv';
+
+    if (!serverQueue) {
+        if (!interaction.member.voice.channel) {
+            return interaction.reply({ content: 'You must be in a voice channel to enable 24/7 mode!', ephemeral: true });
+        }
+
+        serverQueue = {
+            connection: null,
+            player: createAudioPlayer(),
+            songs: [],
+            playing: false,
+            volume: 100,
+            channel: interaction.channel,
+            is247: false,
+            autoplayUrl: defaultUrl
+        };
+        queue.set(guildId, serverQueue);
+    }
+
+    const customUrl = interaction.options.getString('url');
+    if (customUrl) {
+        serverQueue.autoplayUrl = customUrl;
+        serverQueue.is247 = true;
+    } else {
+        if (!serverQueue.is247) {
+            serverQueue.is247 = true;
+            serverQueue.autoplayUrl = defaultUrl;
+        } else {
+            serverQueue.is247 = false;
+        }
+    }
+
+    if (serverQueue.is247) {
+        await interaction.reply(`✅ **24/7 Mode ENABLED**\nStation: ${customUrl ? 'Custom URL' : 'Bollywood Radio'}\nThe bot will play this station when the queue is empty.`);
+
+        if (serverQueue.songs.length === 0 && !serverQueue.playing) {
+            console.log('[DEBUG] 24/7 enabled and queue empty. Starting radio...');
+            const dummySong = {
+                title: 'Bollywood Radio 24/7',
+                url: serverQueue.autoplayUrl,
+                duration: '0',
+                thumbnail: null,
+                requester: 'Autoplay',
+                source: 'arbitrary'
+            };
+            serverQueue.songs.push(dummySong);
+            playSong(guildId, serverQueue.songs[0]);
+        }
+
+    } else {
+        await interaction.reply('❌ **24/7 Mode DISABLED**\nThe bot will disconnect when the queue finishes.');
+    }
+}
 
 async function handlePlay(interaction) {
     const query = interaction.options.getString('query');
@@ -335,6 +396,11 @@ async function handlePlay(interaction) {
 
         serverQueue.songs.push(...songsToAdd);
 
+        if (serverQueue.playing && serverQueue.songs.length > 0 && serverQueue.songs[0].requester === 'Autoplay') {
+            console.log('[DEBUG] Interrupting Autoplay for user request...');
+            serverQueue.player.stop();
+        }
+
         try {
             if (!serverQueue.connection) {
                 const connection = joinVoiceChannel({
@@ -420,9 +486,16 @@ async function playSong(guildId, song) {
 
         if (!song.url) throw new Error('Song URL is undefined!');
 
-        console.log(`[DEBUG] Download URL: ${song.url}`);
+        console.log(`[DEBUG] Playing URL: ${song.url}`);
 
-        stream = await getSoundCloudStream(song.url);
+        if (song.source === 'arbitrary') {
+            // Direct audio stream (Radio)
+            const response = await axios.get(song.url, { responseType: 'stream' });
+            stream = response.data;
+        } else {
+            // SoundCloud Stream
+            stream = await getSoundCloudStream(song.url);
+        }
 
         const resource = createAudioResource(stream, { inlineVolume: true });
         resource.volume.setVolumeLogarithmic(serverQueue.volume / 100);
@@ -440,7 +513,26 @@ async function playSong(guildId, song) {
             const currentQueue = queue.get(guildId);
             if (currentQueue) {
                 currentQueue.songs.shift();
-                playSong(guildId, currentQueue.songs[0]);
+
+                if (currentQueue.songs.length > 0) {
+                    playSong(guildId, currentQueue.songs[0]);
+                } else if (currentQueue.is247 && currentQueue.autoplayUrl) {
+                    console.log('[DEBUG] Queue empty. 24/7 Mode Active. Playing Autoplay URL.');
+                    const radioSong = {
+                        title: 'Bollywood Radio 24/7',
+                        url: currentQueue.autoplayUrl,
+                        duration: '0',
+                        thumbnail: 'https://i.imgur.com/7J9o8kQ.png', // Generic Radio Icon
+                        requester: 'Autoplay',
+                        source: 'arbitrary'
+                    };
+                    currentQueue.songs.push(radioSong);
+                    playSong(guildId, currentQueue.songs[0]);
+                } else {
+                    // Default behavior (stop/disconnect after timeout technically, but here just stop)
+                    currentQueue.playing = false;
+                    // Optional: disconnect
+                }
             }
         });
 

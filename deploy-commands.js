@@ -59,6 +59,13 @@ const commands = [
                 .setMinValue(0)
                 .setMaxValue(100)
                 .setRequired(true)),
+    new SlashCommandBuilder()
+        .setName('247')
+        .setDescription('Toggles 24/7 Autoplay mode (Default: Bollywood Radio)')
+        .addStringOption(option =>
+            option.setName('url')
+                .setDescription('Custom Radio URL (Optional)')
+                .setRequired(false))
 ]
     .map(command => command.toJSON());
 
