@@ -156,7 +156,12 @@ async function handlePlay(interaction) {
         return interaction.reply({ content: 'I need permissions to join and speak in your voice channel!', ephemeral: true });
     }
 
-    await interaction.deferReply();
+    try {
+        await interaction.deferReply();
+    } catch (error) {
+        console.error('Error deferring reply:', error);
+        return;
+    }
 
     const guildId = interaction.guildId;
     let serverQueue = queue.get(guildId);
